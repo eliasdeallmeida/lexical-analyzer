@@ -14,12 +14,17 @@ token_specification = [
     ("COMMENT_BLOCK", r"/\*.*?\*/"),
     ("COMMENT_LINE", r"//.*"),
     ("FLOAT", r"\d+\.\d+"),
-    ("INT", r"\d+"),
+    ("HEX_NUMBER", r"0[xX][0-9a-fA-F]+"),
+    ("OCT_NUMBER", r"0[0-7]+"),
+    ("NUMBER", r"\d+"),
     ("CHAR", r"'(\\.|[^\\'])'"),
     ("STRING", r"\"([^\"\\]|\\.)*\""),
+    ("INVALID_ID", r"\d[A-Za-z0-9_]*"),  # ID que começa com número
+    ("INVALID_FLOAT", r"\d+,\d+"),       # Float com vírgula
     ("ID", r"[A-Za-z_][A-Za-z0-9_]*"),
-    ("OP", r"==|!=|<=|>=|&&|\|\||[+\-*/%<>=!&|.]"),
-    ("DELIM", r"[;,\(\)\{\}\[\]]"),
+    ("LOGICAL_OP", r"&&|\|\||!"),
+    ("OP", r"==|!=|<=|>=|\+=|\-=|\*=|\/=|%=|<<|>>|\+\+|\-\-|\?|:|&|\||\^|[+\-*/%<>=~.]"),
+    ("DELIM", r"[;,(){}[\]]"),
     ("NEWLINE", r"\n"),
     ("SKIP", r"[ \t]+"),
     ("MISMATCH", r".")
@@ -38,55 +43,71 @@ def lexer(code):
 
         if kind == "ID":
             if value in KEYWORDS:
-                tokens.append((value, value))  # keyword
+                tokens.append((value, value, "Palavra-chave"))
             else:
                 if value not in symbol_table:
-                    symbol_table[value] = symbol_index
+                    symbol_table[value] = {"index": symbol_index, "count": 1}
                     symbol_index += 1
-                tokens.append((f"id,{symbol_table[value]}", value))
-
-        elif kind == "INT":
-            tokens.append((f"num,{value}", value))  # atributo é o valor literal
-
+                else:
+                    symbol_table[value]["count"] += 1
+                
+                attr = f"ID,{symbol_table[value]['index']}"
+                tokens.append(("ID", value, attr))
+        
+        elif kind in ("NUMBER", "OCT_NUMBER", "HEX_NUMBER"):
+            tokens.append(("INT", value, value))
         elif kind == "FLOAT":
-            tokens.append((f"float,{value}", value))  # atributo é o valor literal
-
+            tokens.append(("FLOAT", value, value))
         elif kind == "CHAR":
-            tokens.append((f"char,{value[1]}", value))
-
+            tokens.append(("CHAR", value, value[1]))
         elif kind == "STRING":
-            tokens.append((f"string,{value[1:-1]}", value))
+            tokens.append(("STRING", value, value[1:-1]))
 
+        elif kind == "INVALID_ID":
+            tokens.append(("ERROR", value, "ID inválido: começa com número"))
+        elif kind == "INVALID_FLOAT":
+            tokens.append(("ERROR", value, "Float inválido: usa vírgula"))
+        
         elif kind in ("COMMENT_LINE", "COMMENT_BLOCK", "SKIP", "NEWLINE"):
             continue
 
         elif kind == "MISMATCH":
-            tokens.append(("ERROR", value))
-
+            tokens.append(("ERROR", value, "Token não reconhecido"))
+        
         else:
-            tokens.append((value, value))  # operadores e delimitadores
+            tokens.append((kind, value, "Sem atributo"))
 
     return tokens, symbol_table
 
 def print_tokens(tokens):
     print("\n=== LISTA DE TOKENS ===")
-    headers = ["TOKEN", "LEXEMA"]
+    headers = ["TIPO", "LEXEMA", "ATRIBUTO"]
     print(tabulate(tokens, headers=headers, tablefmt="fancy_grid"))
 
 def print_symbol_table(symbols):
     print("\n=== TABELA DE SÍMBOLOS ===")
-    headers = ["#", "IDENTIFICADOR"]
-    table = [[idx, ident] for ident, idx in symbols.items()]
+    headers = ["#", "IDENTIFICADOR", "OCORRÊNCIAS"]
+    table = [[symbol['index'], ident, symbol['count']] for ident, symbol in symbols.items()]
     print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
 
 if __name__ == "__main__":
     code = """
 #include <stdio.h>
 
+// Programa para calcular a área de um círculo
+
+
 int main() {
-    int a = 10, b = 4;
-    float c = (float)a / b;
-    printf("%f\\n", c);
+    float raio = 5.0; // raio do círculo
+    const float PI = 3.14159;
+    
+    float area;
+    
+    // Calcula a área
+    area = PI * raio * raio;
+    
+    printf("A área do círculo é: %f\n", area);
+    
     return 0;
 }
     """
