@@ -1,25 +1,24 @@
 import re
 from tabulate import tabulate
 
+# Palavras-chave da linguagem C
 KEYWORDS = {
     "int", "float", "char", "if", "else", "while", "return",
-    "for", "do", "switch", "case", "break", "continue", 
-    "void", "struct", "typedef", "static", "const", "enum"
+    "for", "do", "switch", "case", "break", "continue",
+    "void", "struct", "typedef", "const", "enum"
 }
 
+# Especificação de tokens
 token_specification = [
     ("PP_DIRECTIVE", r"#.*"),
     ("COMMENT_BLOCK", r"/\*.*?\*/"),
     ("COMMENT_LINE", r"//.*"),
     ("FLOAT", r"\d+\.\d+"),
-    ("WRONG_FLOAT", r"\d+,\d+"),
     ("INT", r"\d+"),
     ("CHAR", r"'(\\.|[^\\'])'"),
-    ("UNTERMINATED_STRING", r"\"([^\"\\]|\\.)*$"),
     ("STRING", r"\"([^\"\\]|\\.)*\""),
     ("ID", r"[A-Za-z_][A-Za-z0-9_]*"),
-    ("INVALID_ID", r"\d+[A-Za-z_][A-Za-z0-9_]*"),
-    ("OP", r"==|!=|<=|>=|&&|\|\||[+\-*/%<>=!&|]"),
+    ("OP", r"==|!=|<=|>=|&&|\|\||[+\-*/%<>=!&|.]"),
     ("DELIM", r"[;,\(\)\{\}\[\]]"),
     ("NEWLINE", r"\n"),
     ("SKIP", r"[ \t]+"),
@@ -31,6 +30,7 @@ token_re = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in tok
 def lexer(code):
     tokens = []
     symbol_table = {}
+    symbol_index = 1
 
     for match in token_re.finditer(code):
         kind = match.lastgroup
@@ -38,70 +38,55 @@ def lexer(code):
 
         if kind == "ID":
             if value in KEYWORDS:
-                tokens.append(("KEYWORD", value, "-"))
+                tokens.append((value, value))  # keyword
             else:
-                tokens.append(("IDENTIFIER", value, "-"))
-                symbol_table[value] = symbol_table.get(value, 0) + 1
-
-        elif kind == "INVALID_ID":
-            tokens.append(("ERROR", value, "Identificador inválido"))
-
-        elif kind == "WRONG_FLOAT":
-            tokens.append(("ERROR", value, "Separador decimal inválido"))
-
-        elif kind == "UNTERMINATED_STRING":
-            tokens.append(("ERROR", value, "String não terminada"))
+                if value not in symbol_table:
+                    symbol_table[value] = symbol_index
+                    symbol_index += 1
+                tokens.append((f"id,{symbol_table[value]}", value))
 
         elif kind == "INT":
-            tokens.append(("INT", value, int(value)))
+            tokens.append((f"num,{value}", value))  # atributo é o valor literal
 
         elif kind == "FLOAT":
-            tokens.append(("FLOAT", value, float(value)))
+            tokens.append((f"float,{value}", value))  # atributo é o valor literal
 
         elif kind == "CHAR":
-            tokens.append(("CHAR", value, value[1]))  # pega apenas o caractere
+            tokens.append((f"char,{value[1]}", value))
 
         elif kind == "STRING":
-            tokens.append(("STRING", value, value[1:-1]))  # remove aspas
+            tokens.append((f"string,{value[1:-1]}", value))
 
         elif kind in ("COMMENT_LINE", "COMMENT_BLOCK", "SKIP", "NEWLINE"):
             continue
 
         elif kind == "MISMATCH":
-            tokens.append(("ERROR", value, "Caractere inesperado"))
+            tokens.append(("ERROR", value))
 
         else:
-            tokens.append((kind, value, "-"))
+            tokens.append((value, value))  # operadores e delimitadores
 
     return tokens, symbol_table
 
-
 def print_tokens(tokens):
     print("\n=== LISTA DE TOKENS ===")
-    headers = ["TIPO", "LEXEMA", "ATRIBUTO"]
-    table = [list(t) for t in tokens]
-    print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
-
+    headers = ["TOKEN", "LEXEMA"]
+    print(tabulate(tokens, headers=headers, tablefmt="fancy_grid"))
 
 def print_symbol_table(symbols):
     print("\n=== TABELA DE SÍMBOLOS ===")
-    headers = ["IDENTIFICADOR", "OCORRÊNCIAS"]
-    table = [[ident, count] for ident, count in symbols.items()]
+    headers = ["#", "IDENTIFICADOR"]
+    table = [[idx, ident] for ident, idx in symbols.items()]
     print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
 
-
-# Exemplo de uso
 if __name__ == "__main__":
     code = """
 #include <stdio.h>
 
 int main() {
-    int x = 10;
-    float y = 3.14;
-    char c = 'z';
-    if (x < y) {
-        return 1;
-    }
+    int a = 10, b = 4;
+    float c = (float)a / b;
+    printf("%f\\n", c);
     return 0;
 }
     """
