@@ -3,226 +3,221 @@ from tabulate import tabulate
 from typing import List, Tuple, Dict, Any
 
 class Lexer:
+    """
+    Analisador Léxico para uma linguagem C-like.
+    
+    Responsável por converter um código fonte em uma sequência de tokens,
+    identificando palavras-chave, identificadores, literais, operadores e erros.
+    """
+
+    # --- Configuração Estática (Melhora a Modularidade) ---
+    _KEYWORDS = {
+        "int", "float", "double", "char", "void", "if", "else", "while", "for", "return",
+        "switch", "case", "default", "break", "continue", "struct", "union", "enum",
+        "typedef", "const", "static", "extern", "goto", "sizeof"
+    }
+
+    _OPERATORS_MAP = {
+        "ARITH_OP": {"+", "-", "*", "/", "%"},
+        "REL_OP": {"==", "!=", "<", "<=", ">", ">="},
+        "LOGIC_OP": {"&&", "||", "!"},
+        "BIT_OP": {"&", "|", "^", "~", "<<", ">>"},
+        "ASSIGN_OP": {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="},
+        "INCDEC": {"++", "--"},
+        "ARROW": {"->"},
+        "ELLIPSIS": {"..."},
+        "TERNARY": {"?", ":"},
+    }
+
+    _DELIMITERS_MAP = {
+        "LPAREN": {"("}, "RPAREN": {")"},
+        "LBRACE": {"{"}, "RBRACE": {"}"},
+        "LBRACKET": {"["}, "RBRACKET": {"]"},
+        "SEMICOLON": {";"},
+        "COMMA": {","},
+        "DOT": {"."},
+    }
+
+    # --- Especificação dos Tokens (Ordem é Importante) ---
+    _TOKEN_SPECIFICATION = [
+        ("PP_DIRECTIVE", r"^[ \t]*\#.*"),
+        ("COMMENT_BLOCK", r"/\*[\s\S]*?\*/"),
+        ("COMMENT_LINE", r"//.*"),
+        ("STRING", r'"(?:\\.|[^"\\])*"'),
+        ("CHAR", r"'(?:\\.|[^'\\])?'"),
+        ("ERROR_CHAR_MULTI", r"'.{2,}'"),
+        ("ERROR_UNTERM_STRING", r'"(?:[^"/\n]|/(?![/*]))*'),
+        ("ERROR_UNTERM_CHAR", r"'(?:[^'/\n]|/(?![/*]))*"),
+        ("NUM_ID_ERROR", r"\d+[A-Za-z_][A-Za-z0-9_]*"),
+        ("NUMBER_COMMA", r"\d+,\d+"),
+        ("ELLIPSIS", r"\.\.\."),
+        ("OP_3", r"<<=|>>="),
+        ("OP_2", r"==|!=|<=|>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|&&|\|\||\+\+|--|->"),
+        ("OP_1", r"[+\-*/%<>=!&|^~?:]"),
+        ("DELIM", r"[()\[\]{};,\.]"),
+        ("FLOAT", r"\d+\.\d+"),
+        ("INT", r"\d+"),
+        ("ID", r"[A-Za-z_][A-Za-z0-9_]*"),
+        ("NEWLINE", r"\n+"),
+        ("SKIP", r"[ \t]+"),
+        ("MISMATCH", r"."),
+    ]
+
     def __init__(self, source: str):
         self.src = source
-        self.tokens: List[Tuple[str,str,Any,int,int]] = []  # (tipo, lexema, attr, line, col)
-        self.symbols: Dict[str, Dict[str,Any]] = {}        # name -> {"id": "idN", "count": n}
+        self.tokens: List[Tuple[str, str, Any, int, int]] = []
+        self.symbols: Dict[str, Dict[str, Any]] = {}
         self.next_id = 1
 
-        # keywords (>=20)
-        self.keywords = {
-            "int","float","double","char","void","if","else","while","for","return",
-            "switch","case","default","break","continue","struct","union","enum",
-            "typedef","const","static","extern","goto","sizeof"
-        }
-
-        # operadores agrupados (usados apenas para categorizar)
-        self.operators_map = {
-            "ARITH_OP": {"+","-","*","/","%"},
-            "REL_OP": {"==","!=","<","<=",">",">="},
-            "LOGIC_OP": {"&&","||","!"},
-            "BIT_OP": {"&","|","^","~","<<",">>"},
-            "ASSIGN_OP": {"=","+=","-=","*=","/=","%=","&=","|=","^=","<<=",">>="},
-            "INCDEC": {"++","--"},
-            "ARROW": {"->"},
-            "ELLIPSIS": {"..."},
-            "TERNARY": {"?",":"},
-        }
-
-        # delimiters more explicit
-        self.delimiters_map = {
-            "LPAREN": {"("}, "RPAREN": {")"},
-            "LBRACE": {"{"}, "RBRACE": {"}"},
-            "LBRACKET": {"["}, "RBRACKET": {"]"},
-            "SEMICOLON": {";"},
-            "COMMA": {","},
-            "DOT": {"."},
-        }
-
-        # Build flattened lookup for categorize function
-        self.flat_op_to_cat = {}
-        for cat, s in self.operators_map.items():
-            for lex in s:
-                self.flat_op_to_cat[lex] = cat
-        for cat, s in self.delimiters_map.items():
-            for lex in s:
-                self.flat_op_to_cat[lex] = cat
-
-        # token specification (order matters)
-        token_specification = [
-            # PP_DIRECTIVE: only at start of line (allow leading spaces/tabs) -> match until EOL
-            ("PP_DIRECTIVE", r"^[ \t]*\#.*"),
-
-            # comments (block first, allow newlines inside)
-            ("COMMENT_BLOCK", r"/\*[\s\S]*?\*/"),
-            ("COMMENT_LINE", r"//.*"),
-
-            # --- CORREÇÃO INICIADA ---
-            # strings e chars (válidos primeiro, depois os erros específicos)
-            ("STRING", r'"(?:\\.|[^"\\])*"'),   # String válida (aceita vazia)
-            ("CHAR",   r"'(?:\\.|[^'\\])?'"),    # Char válido (aceita vazio com '?')
-
-            # Erros específicos para literais de char e string
-            ("ERROR_CHAR_MULTI",     r"'.{2,}'"),             # Erro: char com múltiplos caracteres, ex: 'ab'
-            # Erro: literais não terminados.
-            ("ERROR_UNTERM_STRING",  r'"(?:[^"/\n]|/(?![/*]))*'), # Erro: string não terminada na linha
-            ("ERROR_UNTERM_CHAR",    r"'(?:[^'/\n]|/(?![/*]))*"),   # Erro: char não terminado na linha
-            # --- CORREÇÃO FINALIZADA ---
-
-            # special error patterns BEFORE numeric tokens:
-            ("NUM_ID_ERROR", r"\d+[A-Za-z_][A-Za-z0-9_]*"),   # 123abc -> ERROR
-            ("NUMBER_COMMA", r"\d+,\d+"),                     # 3,14 -> ERROR
-
-            # ellipsis and multi-char op tokens first
-            ("ELLIPSIS", r"\.\.\."),
-            ("OP_3", r"<<=|>>="),
-
-            # 2-char ops
-            ("OP_2", r"==|!=|<=|>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|&&|\|\||\+\+|--|->"),
-
-            # single-char operators and delimiters
-            ("OP_1", r"[+\-*/%<>=!&|^~?:]"),
-            ("DELIM", r"[()\[\]{};,\.]"),
-
-            # numbers (float then int)
-            ("FLOAT", r"\d+\.\d+"),
-            ("INT",   r"\d+"),
-
-            # identifier
-            ("ID",    r"[A-Za-z_][A-Za-z0-9_]*"),
-
-            # whitespace/newlines
-            ("NEWLINE", r"\n+"),
-            ("SKIP",    r"[ \t]+"),
-
-            # any other single char (mismatch/error)
-            ("MISMATCH", r"."),
-        ]
-
-        # compile combined regex with MULTILINE so ^ works for PP_DIRECTIVE
+        # Compila o regex uma vez para otimizar a performance
         self.tok_regex = re.compile(
-            "|".join("(?P<%s>%s)" % pair for pair in token_specification),
+            "|".join(f"(?P<{pair[0]}>{pair[1]})" for pair in self._TOKEN_SPECIFICATION),
             re.MULTILINE
         )
 
-    def get_line_col(self, pos: int) -> (int,int):
-        line = self.src.count('\n', 0, pos) + 1
-        last_nl = self.src.rfind('\n', 0, pos)
-        col = pos - last_nl
-        return line, col
+        # Mapeamento de operadores para suas categorias (para performance)
+        self._flat_op_to_cat = self._build_flat_op_map()
 
-    def categorize_op_or_delim(self, lexeme: str) -> str:
-        return self.flat_op_to_cat.get(lexeme, "UNKNOWN_OP_DELIM")
+        # Mapeamento de tipos de erro para mensagens (centraliza as mensagens)
+        self._error_messages = {
+            'ERROR_UNTERM_STRING': "string não terminada",
+            'ERROR_UNTERM_CHAR': "literal de caractere não terminado",
+            'ERROR_CHAR_MULTI': "literal de caractere com múltiplos caracteres",
+            'NUM_ID_ERROR': "identificador não pode começar com número",
+            'NUMBER_COMMA': "vírgula como separador decimal (use ponto)",
+            'MISMATCH': "caractere inesperado",
+        }
 
-    def add_symbol(self, name: str) -> str:
-        if name not in self.symbols:
-            assigned = f"id{self.next_id}"
-            self.symbols[name] = {"id": assigned, "count": 1}
-            self.next_id += 1
-            return assigned
-        else:
-            self.symbols[name]["count"] += 1
-            return self.symbols[name]["id"]
+    @classmethod
+    def _build_flat_op_map(cls) -> Dict[str, str]:
+        """Cria um dicionário para categorizar operadores e delimitadores rapidamente."""
+        flat_map = {}
+        for cat, op_set in {**cls._OPERATORS_MAP, **cls._DELIMITERS_MAP}.items():
+            for op in op_set:
+                flat_map[op] = cat
+        return flat_map
 
-    def tokenize(self):
+    def tokenize(self) -> Tuple[List[Any], Dict[str, Any]]:
+        """
+        Executa a análise léxica no código fonte.
+
+        Itera sobre todas as correspondências encontradas pelo regex compilado,
+        ignora o que não é relevante (comentários, espaços) e despacha
+        cada token para o método de tratamento apropriado.
+        """
         for mo in self.tok_regex.finditer(self.src):
             kind = mo.lastgroup
+            
+            if kind in ("COMMENT_BLOCK", "COMMENT_LINE", "SKIP", "NEWLINE"):
+                continue
+
             lexeme = mo.group()
-            start = mo.start()
-            line, col = self.get_line_col(start)
+            line, col = self._get_line_col(mo.start())
+            
+            # --- Despacho de Handlers (Melhora a Legibilidade) ---
+            if kind.startswith("ERROR"):
+                self._handle_error(kind, lexeme, line, col)
+            elif kind in ("STRING", "CHAR"):
+                self._handle_literal(kind, lexeme, line, col)
+            elif kind in ("FLOAT", "INT"):
+                self._handle_numeric_literal(kind, lexeme, line, col)
+            elif kind == "ID":
+                self._handle_identifier(lexeme, line, col)
+            elif kind == "PP_DIRECTIVE":
+                self._handle_pp_directive(lexeme, line, col)
+            else: # Operadores e Delimitadores
+                self._handle_operator(lexeme, line, col)
 
-            if kind in ("COMMENT_BLOCK","COMMENT_LINE","SKIP","NEWLINE"):
-                continue
-
-            if kind == "PP_DIRECTIVE":
-                self.tokens.append(("PP_DIRECTIVE", lexeme.rstrip("\r\n"), None, line, col))
-                continue
-
-            # Tratamento centralizado dos tipos de erro
-            if kind == "ERROR_UNTERM_STRING":
-                self.tokens.append(("ERROR", lexeme, "string não terminada", line, col))
-                continue
-            if kind == "ERROR_UNTERM_CHAR":
-                self.tokens.append(("ERROR", lexeme, "literal de caractere não terminado", line, col))
-                continue
-            if kind == "ERROR_CHAR_MULTI":
-                self.tokens.append(("ERROR", lexeme, "literal de caractere com múltiplos caracteres", line, col))
-                continue
-
-            if kind == "NUM_ID_ERROR":
-                self.tokens.append(("ERROR", lexeme, "identificador não pode começar com número", line, col))
-                continue
-            if kind == "NUMBER_COMMA":
-                self.tokens.append(("ERROR", lexeme, "vírgula como separador decimal (use ponto)", line, col))
-                continue
-
-            if kind == "STRING":
-                content = lexeme[1:-1]
-                self.tokens.append(("STRING_LITERAL", lexeme, content, line, col))
-                continue
-
-            if kind == "CHAR":
-                content = lexeme[1:-1]
-                self.tokens.append(("CHAR_LITERAL", lexeme, content, line, col))
-                continue
-
-            if kind == "FLOAT":
-                try:
-                    val = float(lexeme)
-                    self.tokens.append(("FLOAT_LITERAL", lexeme, val, line, col))
-                except Exception:
-                    self.tokens.append(("ERROR", lexeme, "float inválido", line, col))
-                continue
-
-            if kind == "INT":
-                try:
-                    val = int(lexeme)
-                    self.tokens.append(("INT_LITERAL", lexeme, val, line, col))
-                except Exception:
-                    self.tokens.append(("ERROR", lexeme, "inteiro inválido", line, col))
-                continue
-
-            if kind == "ID":
-                if lexeme in self.keywords:
-                    self.tokens.append(("KEYWORD", lexeme, None, line, col))
-                else:
-                    assigned_id = self.add_symbol(lexeme)
-                    self.tokens.append(("IDENTIFIER", lexeme, assigned_id, line, col))
-                continue
-
-            if kind in ("ELLIPSIS","OP_3","OP_2","OP_1","DELIM"):
-                cat = self.categorize_op_or_delim(lexeme)
-                self.tokens.append((cat, lexeme, None, line, col))
-                continue
-
-            if kind == "MISMATCH":
-                self.tokens.append(("ERROR", lexeme, "caractere inesperado", line, col))
-                continue
-
-        eof_line, eof_col = self.get_line_col(len(self.src))
-        self.tokens.append(("EOF", "", None, eof_line, eof_col))
+        # Adiciona token de Fim de Arquivo (EOF)
+        eof_line, eof_col = self._get_line_col(len(self.src))
+        self._add_token("EOF", "", None, eof_line, eof_col)
+        
         return self.tokens, self.symbols
 
+    # --- Métodos de Tratamento (Handlers) ---
+
+    def _add_token(self, ttype: str, lexeme: str, attr: Any, line: int, col: int):
+        """Adiciona um token formatado à lista de tokens."""
+        self.tokens.append((ttype, lexeme, attr, line, col))
+
+    def _handle_error(self, kind: str, lexeme: str, line: int, col: int):
+        message = self._error_messages.get(kind, "Erro desconhecido")
+        self._add_token("ERROR", lexeme, message, line, col)
+
+    def _handle_literal(self, kind: str, lexeme: str, line: int, col: int):
+        ttype = "STRING_LITERAL" if kind == "STRING" else "CHAR_LITERAL"
+        content = lexeme[1:-1]
+        self._add_token(ttype, lexeme, content, line, col)
+
+    def _handle_numeric_literal(self, kind: str, lexeme: str, line: int, col: int):
+        try:
+            if kind == "FLOAT":
+                val = float(lexeme)
+                self._add_token("FLOAT_LITERAL", lexeme, val, line, col)
+            else: # INT
+                val = int(lexeme)
+                self._add_token("INT_LITERAL", lexeme, val, line, col)
+        except ValueError:
+            msg = "float inválido" if kind == "FLOAT" else "inteiro inválido"
+            self._add_token("ERROR", lexeme, msg, line, col)
+    
+    def _handle_identifier(self, lexeme: str, line: int, col: int):
+        if lexeme in self._KEYWORDS:
+            self._add_token("KEYWORD", lexeme, None, line, col)
+        else:
+            assigned_id = self._add_symbol(lexeme)
+            self._add_token("IDENTIFIER", lexeme, assigned_id, line, col)
+
+    def _handle_pp_directive(self, lexeme: str, line: int, col: int):
+        self._add_token("PP_DIRECTIVE", lexeme.rstrip("\r\n"), None, line, col)
+
+    def _handle_operator(self, lexeme: str, line: int, col: int):
+        cat = self._flat_op_to_cat.get(lexeme, "UNKNOWN_OP_DELIM")
+        self._add_token(cat, lexeme, None, line, col)
+
+    # --- Métodos Auxiliares ---
+
+    def _get_line_col(self, pos: int) -> Tuple[int, int]:
+        """Calcula a linha e coluna (1-based) para uma dada posição no código."""
+        line = self.src.count('\n', 0, pos) + 1
+        last_nl = self.src.rfind('\n', 0, pos)
+        col = (pos - last_nl) if last_nl != -1 else pos + 1
+        return line, col
+
+    def _add_symbol(self, name: str) -> str:
+        """Adiciona um novo identificador à tabela de símbolos ou incrementa a contagem."""
+        if name not in self.symbols:
+            assigned_id = f"id{self.next_id}"
+            self.symbols[name] = {"id": assigned_id, "count": 1}
+            self.next_id += 1
+        else:
+            self.symbols[name]["count"] += 1
+        return self.symbols[name]["id"]
+
     def pretty_print(self):
-        # tokens table
-        token_rows = []
-        for ttype, lex, attr, line, col in self.tokens:
-            token_rows.append([f"{line}:{col}", ttype, lex, attr if attr is not None else ""])
+        """Imprime as tabelas de tokens e de símbolos de forma legível."""
+        # Tabela de Tokens
+        token_rows = [
+            [f"{line}:{col}", ttype, lex, attr if attr is not None else ""]
+            for ttype, lex, attr, line, col in self.tokens
+        ]
         print("\nTabela de Tokens:")
         print(tabulate(token_rows, headers=["Pos", "Tipo", "Lexema", "Atributo"], tablefmt="grid"))
 
-        # symbols table sorted by numeric id
-        sym_rows = []
+        # Tabela de Símbolos
         def id_key(item):
-            n = int(item[1]["id"][2:]) if item[1]["id"].startswith("id") else 0
-            return n
-        for name, data in sorted(self.symbols.items(), key=id_key):
-            sym_rows.append([data["id"], name, data["count"]])
+            return int(item[1]["id"][2:]) if item[1]["id"].startswith("id") else 0
+        
+        sorted_symbols = sorted(self.symbols.items(), key=id_key)
+        sym_rows = [
+            [data["id"], name, data["count"]]
+            for name, data in sorted_symbols
+        ]
         print("\nTabela de Símbolos:")
         print(tabulate(sym_rows, headers=["ID", "Identificador", "Ocorrências"], tablefmt="grid"))
 
 
-# ---------------- teste ----------------
+# ---------------- Bloco de Teste ----------------
 if __name__ == "__main__":
     code = r'''
 #include <stdio.h>
