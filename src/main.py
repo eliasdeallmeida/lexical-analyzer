@@ -57,22 +57,30 @@ class Lexer:
             ("COMMENT_BLOCK", r"/\*[\s\S]*?\*/"),
             ("COMMENT_LINE", r"//.*"),
 
-            # strings and chars (no real newline inside)
-            ("STRING", r"\"(?:\\.|[^\"\\\n])*\""),
-            ("CHAR",   r"'(?:\\.|[^'\\\n])'"),
+            # --- CORREÇÃO INICIADA ---
+            # strings e chars (válidos primeiro, depois os erros específicos)
+            ("STRING", r'"(?:\\.|[^"\\])*"'),   # String válida (aceita vazia)
+            ("CHAR",   r"'(?:\\.|[^'\\])?'"),    # Char válido (aceita vazio com '?')
+
+            # Erros específicos para literais de char e string
+            ("ERROR_CHAR_MULTI",     r"'.{2,}'"),             # Erro: char com múltiplos caracteres, ex: 'ab'
+            # Erro: literais não terminados.
+            ("ERROR_UNTERM_STRING",  r'"(?:[^"/\n]|/(?![/*]))*'), # Erro: string não terminada na linha
+            ("ERROR_UNTERM_CHAR",    r"'(?:[^'/\n]|/(?![/*]))*"),   # Erro: char não terminado na linha
+            # --- CORREÇÃO FINALIZADA ---
 
             # special error patterns BEFORE numeric tokens:
             ("NUM_ID_ERROR", r"\d+[A-Za-z_][A-Za-z0-9_]*"),   # 123abc -> ERROR
-            ("NUMBER_COMMA", r"\d+,\d+"),                    # 3,14 -> ERROR
+            ("NUMBER_COMMA", r"\d+,\d+"),                     # 3,14 -> ERROR
 
             # ellipsis and multi-char op tokens first
             ("ELLIPSIS", r"\.\.\."),
             ("OP_3", r"<<=|>>="),
 
-            # 2-char ops (order long first isn't necessary after building the alternation)
+            # 2-char ops
             ("OP_2", r"==|!=|<=|>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|&&|\|\||\+\+|--|->"),
 
-            # single-char operators and delimiters (includes '?',':')
+            # single-char operators and delimiters
             ("OP_1", r"[+\-*/%<>=!&|^~?:]"),
             ("DELIM", r"[()\[\]{};,\.]"),
 
@@ -98,7 +106,6 @@ class Lexer:
         )
 
     def get_line_col(self, pos: int) -> (int,int):
-        # line is 1-based
         line = self.src.count('\n', 0, pos) + 1
         last_nl = self.src.rfind('\n', 0, pos)
         col = pos - last_nl
@@ -124,16 +131,24 @@ class Lexer:
             start = mo.start()
             line, col = self.get_line_col(start)
 
-            # skip comments and whitespace/newlines (but keep newline for line counting already handled)
             if kind in ("COMMENT_BLOCK","COMMENT_LINE","SKIP","NEWLINE"):
                 continue
 
-            # PP directive (keep full matched line, trim right)
             if kind == "PP_DIRECTIVE":
                 self.tokens.append(("PP_DIRECTIVE", lexeme.rstrip("\r\n"), None, line, col))
                 continue
 
-            # errors from specific patterns
+            # Tratamento centralizado dos tipos de erro
+            if kind == "ERROR_UNTERM_STRING":
+                self.tokens.append(("ERROR", lexeme, "string não terminada", line, col))
+                continue
+            if kind == "ERROR_UNTERM_CHAR":
+                self.tokens.append(("ERROR", lexeme, "literal de caractere não terminado", line, col))
+                continue
+            if kind == "ERROR_CHAR_MULTI":
+                self.tokens.append(("ERROR", lexeme, "literal de caractere com múltiplos caracteres", line, col))
+                continue
+
             if kind == "NUM_ID_ERROR":
                 self.tokens.append(("ERROR", lexeme, "identificador não pode começar com número", line, col))
                 continue
@@ -142,8 +157,6 @@ class Lexer:
                 continue
 
             if kind == "STRING":
-                # If regex matched, it's a syntactically closed string (no newline inside).
-                # We could still unescape here if desired.
                 content = lexeme[1:-1]
                 self.tokens.append(("STRING_LITERAL", lexeme, content, line, col))
                 continue
@@ -162,7 +175,6 @@ class Lexer:
                 continue
 
             if kind == "INT":
-                # integers are fine
                 try:
                     val = int(lexeme)
                     self.tokens.append(("INT_LITERAL", lexeme, val, line, col))
@@ -178,29 +190,15 @@ class Lexer:
                     self.tokens.append(("IDENTIFIER", lexeme, assigned_id, line, col))
                 continue
 
-            # operators / delimiters
             if kind in ("ELLIPSIS","OP_3","OP_2","OP_1","DELIM"):
-                # normalize lexeme (no further processing)
                 cat = self.categorize_op_or_delim(lexeme)
-                # if not found in maps, still put a generic category
-                if cat == "UNKNOWN_OP_DELIM":
-                    # try to classify single-char delimiters
-                    if lexeme in {"(",")","{","}","[","]"}:
-                        cat = {
-                            "(": "LPAREN","}":"RBRACE","{":"LBRACE",
-                            ")":"RPAREN","[":"LBRACKET","]":"RBRACKET"
-                        }.get(lexeme, "DELIM")
-                    else:
-                        cat = "DELIM" if re.fullmatch(r"[()\[\]{};,\.]", lexeme) else "OP"
                 self.tokens.append((cat, lexeme, None, line, col))
                 continue
 
-            # fallback mismatch -> error
             if kind == "MISMATCH":
                 self.tokens.append(("ERROR", lexeme, "caractere inesperado", line, col))
                 continue
 
-        # append EOF token
         eof_line, eof_col = self.get_line_col(len(self.src))
         self.tokens.append(("EOF", "", None, eof_line, eof_col))
         return self.tokens, self.symbols
@@ -215,7 +213,6 @@ class Lexer:
 
         # symbols table sorted by numeric id
         sym_rows = []
-        # sort by numeric part of id
         def id_key(item):
             n = int(item[1]["id"][2:]) if item[1]["id"].startswith("id") else 0
             return n
@@ -232,8 +229,10 @@ if __name__ == "__main__":
 #define PI 3.14
 
 int main() {
-    // comentário de linha
+    // Casos válidos
     char c = '\n';
+    char empty_c = '';    // char vazio (agora válido)
+    char s_vazia[] = "";  // string vazia (sempre foi válida)
     float x = 3.14;
     int y = 42;
     y += 5;
@@ -241,10 +240,11 @@ int main() {
         printf("valor: %d\n", y);
     }
     // erros propositais:
-    float e1 = 3,14;   // vírgula no float
-    int 123abc = 10;   // id começa com número
-    char bad = 'ab';   // char com >1 (regex não casa -> será 'ab' como dois tokens MISMATCH/ERRORs)
-    char s[] = "texto sem fechar
+    float e1 = 3,14;      // vírgula no float
+    int 123abc = 10;      // id começa com número
+    char bad_char = 'ab'; // char com >1 caractere
+    char unterm_c = 'a;    // char não terminado
+    char s[] = "texto sem fechar; // string nao terminada
     a -> b;
     a ... b;
 }
